@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Icon from "@/components/ui/icon";
+
+const API_URL = "https://functions.poehali.dev/5f129c28-4b44-44bf-b114-caee8559c59f";
 
 type Priority = "high" | "medium" | "low";
 type Status = "active" | "done" | "closed";
@@ -12,9 +14,9 @@ interface Task {
   description: string;
   priority: Priority;
   status: Status;
-  reminder?: string;
-  createdAt: string;
-  completedAt?: string;
+  reminder?: string | null;
+  created_at: string;
+  completed_at?: string | null;
 }
 
 const PRIORITY_LABEL: Record<Priority, string> = {
@@ -28,53 +30,6 @@ const PRIORITY_DOT: Record<Priority, string> = {
   medium: "bg-amber-400",
   low: "bg-emerald-500",
 };
-
-const INITIAL_TASKS: Task[] = [
-  {
-    id: "1",
-    title: "Проверить статус API",
-    description: "Убедиться, что все эндпоинты доступны и отвечают корректно",
-    priority: "high",
-    status: "active",
-    reminder: "09:00",
-    createdAt: "2026-05-19T08:00:00",
-  },
-  {
-    id: "2",
-    title: "Обновить документацию",
-    description: "Добавить описание новых методов в README",
-    priority: "medium",
-    status: "active",
-    reminder: "14:00",
-    createdAt: "2026-05-19T09:30:00",
-  },
-  {
-    id: "3",
-    title: "Настроить мониторинг",
-    description: "Подключить алёрты на ошибки в продакшне",
-    priority: "low",
-    status: "active",
-    createdAt: "2026-05-18T16:00:00",
-  },
-  {
-    id: "4",
-    title: "Деплой новой версии",
-    description: "Выгрузить сборку 2.1.4 на сервер",
-    priority: "high",
-    status: "done",
-    createdAt: "2026-05-17T10:00:00",
-    completedAt: "2026-05-17T15:30:00",
-  },
-  {
-    id: "5",
-    title: "Бэкап базы данных",
-    description: "Плановое копирование данных за неделю",
-    priority: "medium",
-    status: "closed",
-    createdAt: "2026-05-16T08:00:00",
-    completedAt: "2026-05-16T08:45:00",
-  },
-];
 
 const INITIAL_SETTINGS = {
   checkInterval: "30",
@@ -99,9 +54,24 @@ function formatDate(iso: string) {
   });
 }
 
+async function apiFetch(path: string, options?: RequestInit) {
+  const url = path ? `${API_URL}${path}` : API_URL;
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const text = await res.text();
+  try {
+    return { ok: res.ok, status: res.status, data: JSON.parse(text) };
+  } catch {
+    return { ok: res.ok, status: res.status, data: null };
+  }
+}
+
 const Index = () => {
   const [tab, setTab] = useState<Tab>("tasks");
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
   const [settings, setSettings] = useState(INITIAL_SETTINGS);
   const [form, setForm] = useState({
@@ -111,6 +81,18 @@ const Index = () => {
     reminder: "",
   });
   const [addSuccess, setAddSuccess] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadTasks = useCallback(async () => {
+    setLoading(true);
+    const { data } = await apiFetch("");
+    if (data?.tasks) setTasks(data.tasks);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadTasks();
+  }, [loadTasks]);
 
   const activeTasks = tasks.filter((t) => t.status === "active");
   const historyTasks = tasks.filter((t) => t.status !== "active");
@@ -120,46 +102,55 @@ const Index = () => {
       ? activeTasks
       : activeTasks.filter((t) => t.priority === filter);
 
-  function completeTask(id: string) {
+  async function completeTask(id: string) {
     setTasks((prev) =>
       prev.map((t) =>
-        t.id === id
-          ? { ...t, status: "done", completedAt: new Date().toISOString() }
-          : t
+        t.id === id ? { ...t, status: "done", completed_at: new Date().toISOString() } : t
       )
     );
+    await apiFetch(`?id=${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "done" }),
+    });
   }
 
-  function closeTask(id: string) {
+  async function closeTask(id: string) {
     setTasks((prev) =>
       prev.map((t) =>
-        t.id === id
-          ? { ...t, status: "closed", completedAt: new Date().toISOString() }
-          : t
+        t.id === id ? { ...t, status: "closed", completed_at: new Date().toISOString() } : t
       )
     );
+    await apiFetch(`?id=${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "closed" }),
+    });
   }
 
-  function deleteTask(id: string) {
+  async function deleteTask(id: string) {
     setTasks((prev) => prev.filter((t) => t.id !== id));
+    await apiFetch(`?id=${id}`, { method: "DELETE" });
   }
 
-  function addTask() {
-    if (!form.title.trim()) return;
-    const newTask: Task = {
-      id: Date.now().toString(),
-      title: form.title,
-      description: form.description,
-      priority: form.priority,
-      status: "active",
-      reminder: form.reminder || undefined,
-      createdAt: new Date().toISOString(),
-    };
-    setTasks((prev) => [newTask, ...prev]);
-    setForm({ title: "", description: "", priority: "medium", reminder: "" });
-    setAddSuccess(true);
-    setTimeout(() => setAddSuccess(false), 2500);
-    setTimeout(() => setTab("tasks"), 400);
+  async function addTask() {
+    if (!form.title.trim() || submitting) return;
+    setSubmitting(true);
+    const { data, ok } = await apiFetch("", {
+      method: "POST",
+      body: JSON.stringify({
+        title: form.title,
+        description: form.description,
+        priority: form.priority,
+        reminder: form.reminder || null,
+      }),
+    });
+    if (ok && data?.task) {
+      setTasks((prev) => [data.task, ...prev]);
+      setForm({ title: "", description: "", priority: "medium", reminder: "" });
+      setAddSuccess(true);
+      setTimeout(() => setAddSuccess(false), 2500);
+      setTimeout(() => setTab("tasks"), 400);
+    }
+    setSubmitting(false);
   }
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -183,10 +174,16 @@ const Index = () => {
             </span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              {activeTasks.length} активных
-            </span>
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            {loading ? (
+              <span className="text-xs text-muted-foreground">загрузка...</span>
+            ) : (
+              <>
+                <span className="text-xs text-muted-foreground">
+                  {activeTasks.length} активных
+                </span>
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -215,7 +212,16 @@ const Index = () => {
               </span>
             </div>
 
-            {filteredActive.length === 0 ? (
+            {loading ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-card border border-border rounded-lg p-4 animate-pulse">
+                    <div className="h-4 bg-muted rounded w-2/3 mb-2" />
+                    <div className="h-3 bg-muted rounded w-1/2" />
+                  </div>
+                ))}
+              </div>
+            ) : filteredActive.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Icon name="Inbox" size={32} className="mx-auto mb-3 opacity-30" />
                 <p className="text-sm">Нет задач в этой категории</p>
@@ -247,7 +253,7 @@ const Index = () => {
                           </p>
                         )}
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          <span>{formatDate(task.createdAt)}</span>
+                          <span>{formatDate(task.created_at)}</span>
                           {task.reminder && (
                             <span className="flex items-center gap-1">
                               <Icon name="Bell" size={10} />
@@ -290,6 +296,7 @@ const Index = () => {
                 <input
                   value={form.title}
                   onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && addTask()}
                   placeholder="Что нужно сделать?"
                   className="w-full px-3 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-foreground/20 focus:border-foreground/40 transition-all"
                 />
@@ -301,9 +308,7 @@ const Index = () => {
                 </label>
                 <textarea
                   value={form.description}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, description: e.target.value }))
-                  }
+                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                   placeholder="Подробности задачи..."
                   rows={3}
                   className="w-full px-3 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-foreground/20 focus:border-foreground/40 transition-all resize-none"
@@ -349,9 +354,7 @@ const Index = () => {
                   <input
                     type="time"
                     value={form.reminder}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, reminder: e.target.value }))
-                    }
+                    onChange={(e) => setForm((f) => ({ ...f, reminder: e.target.value }))}
                     className="w-full pl-9 pr-3 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20 focus:border-foreground/40 transition-all"
                   />
                 </div>
@@ -359,10 +362,17 @@ const Index = () => {
 
               <button
                 onClick={addTask}
-                disabled={!form.title.trim()}
-                className="w-full py-3 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                disabled={!form.title.trim() || submitting}
+                className="w-full py-3 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                Добавить задачу
+                {submitting ? (
+                  <>
+                    <Icon name="Loader2" size={14} className="animate-spin" />
+                    Сохраняю...
+                  </>
+                ) : (
+                  "Добавить задачу"
+                )}
               </button>
             </div>
           </div>
@@ -373,7 +383,15 @@ const Index = () => {
           <div className="animate-fade-in">
             <h2 className="font-semibold text-base mb-5">История</h2>
 
-            {historyTasks.length === 0 ? (
+            {loading ? (
+              <div className="space-y-2">
+                {[1, 2].map((i) => (
+                  <div key={i} className="bg-card border border-border rounded-lg p-4 animate-pulse">
+                    <div className="h-4 bg-muted rounded w-2/3" />
+                  </div>
+                ))}
+              </div>
+            ) : historyTasks.length === 0 ? (
               <div className="text-center py-16 text-muted-foreground">
                 <Icon name="Clock" size={32} className="mx-auto mb-3 opacity-30" />
                 <p className="text-sm">История пуста</p>
@@ -394,11 +412,7 @@ const Index = () => {
                         <Icon
                           name={task.status === "done" ? "Check" : "Minus"}
                           size={10}
-                          className={
-                            task.status === "done"
-                              ? "text-background"
-                              : "text-muted-foreground"
-                          }
+                          className={task.status === "done" ? "text-background" : "text-muted-foreground"}
                         />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -420,10 +434,9 @@ const Index = () => {
                           >
                             {task.status === "done" ? "Выполнено" : "Закрыто"}
                           </span>
-                          {task.completedAt && (
+                          {task.completed_at && (
                             <span>
-                              {formatDate(task.completedAt)},{" "}
-                              {formatTime(task.completedAt)}
+                              {formatDate(task.completed_at)}, {formatTime(task.completed_at)}
                             </span>
                           )}
                         </div>
@@ -464,9 +477,7 @@ const Index = () => {
                   max="120"
                   step="5"
                   value={settings.checkInterval}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, checkInterval: e.target.value }))
-                  }
+                  onChange={(e) => setSettings((s) => ({ ...s, checkInterval: e.target.value }))}
                   className="w-full accent-foreground"
                 />
                 <div className="flex justify-between text-xs text-muted-foreground mt-1">
@@ -491,9 +502,7 @@ const Index = () => {
                   max="60"
                   step="5"
                   value={settings.notifyBefore}
-                  onChange={(e) =>
-                    setSettings((s) => ({ ...s, notifyBefore: e.target.value }))
-                  }
+                  onChange={(e) => setSettings((s) => ({ ...s, notifyBefore: e.target.value }))}
                   className="w-full accent-foreground"
                 />
                 <div className="flex justify-between text-xs text-muted-foreground mt-1">
@@ -512,16 +521,12 @@ const Index = () => {
                     </div>
                   </div>
                   <button
-                    onClick={() =>
-                      setSettings((s) => ({ ...s, dailyDigest: !s.dailyDigest }))
-                    }
+                    onClick={() => setSettings((s) => ({ ...s, dailyDigest: !s.dailyDigest }))}
                     className="relative rounded-full transition-all flex-shrink-0"
                     style={{
                       height: "22px",
                       width: "40px",
-                      background: settings.dailyDigest
-                        ? "hsl(var(--foreground))"
-                        : "hsl(var(--border))",
+                      background: settings.dailyDigest ? "hsl(var(--foreground))" : "hsl(var(--border))",
                     }}
                   >
                     <div
@@ -538,9 +543,7 @@ const Index = () => {
                   <input
                     type="time"
                     value={settings.digestTime}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, digestTime: e.target.value }))
-                    }
+                    onChange={(e) => setSettings((s) => ({ ...s, digestTime: e.target.value }))}
                     className="px-3 py-2 bg-secondary border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-foreground/20 transition-all"
                   />
                 )}
@@ -556,16 +559,12 @@ const Index = () => {
                     </div>
                   </div>
                   <button
-                    onClick={() =>
-                      setSettings((s) => ({ ...s, soundEnabled: !s.soundEnabled }))
-                    }
+                    onClick={() => setSettings((s) => ({ ...s, soundEnabled: !s.soundEnabled }))}
                     className="relative rounded-full transition-all flex-shrink-0"
                     style={{
                       height: "22px",
                       width: "40px",
-                      background: settings.soundEnabled
-                        ? "hsl(var(--foreground))"
-                        : "hsl(var(--border))",
+                      background: settings.soundEnabled ? "hsl(var(--foreground))" : "hsl(var(--border))",
                     }}
                   >
                     <div
@@ -590,16 +589,12 @@ const Index = () => {
                     </div>
                   </div>
                   <button
-                    onClick={() =>
-                      setSettings((s) => ({ ...s, autoClose: !s.autoClose }))
-                    }
+                    onClick={() => setSettings((s) => ({ ...s, autoClose: !s.autoClose }))}
                     className="relative rounded-full transition-all flex-shrink-0"
                     style={{
                       height: "22px",
                       width: "40px",
-                      background: settings.autoClose
-                        ? "hsl(var(--foreground))"
-                        : "hsl(var(--border))",
+                      background: settings.autoClose ? "hsl(var(--foreground))" : "hsl(var(--border))",
                     }}
                   >
                     <div

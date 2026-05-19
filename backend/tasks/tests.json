@@ -1,0 +1,17 @@
+{
+  "tests": [
+    {
+      "name": "GET all tasks",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "POST create task",
+      "method": "POST",
+      "path": "/",
+      "body": {"title": "Тест задача", "priority": "medium"},
+      "expectedStatus": 201
+    }
+  ]
+}
